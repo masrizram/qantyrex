@@ -26,6 +26,18 @@ class FetchError:
 
 
 @dataclass
+class PageRecord:
+    """Per-page pagination metadata for cursor-advancement auditing (Phase 23.3)."""
+    page_number: int
+    request_since: Optional[int]
+    response_first_ts: Optional[int]
+    response_last_ts: Optional[int]
+    row_count: int
+    next_since: Optional[int]
+    cursor_advanced: bool
+
+
+@dataclass
 class IngestionReport:
     exchange: str
     symbol: str
@@ -39,6 +51,10 @@ class IngestionReport:
     retrieved_at: int = field(default_factory=lambda: int(time.time() * 1000))
     resumed: bool = False
     data_source: str = "ccxt"
+    pages: List[PageRecord] = field(default_factory=list)
+    pagination_failures: int = 0
+    expected_candles: int = 0
+    coverage_ratio: float = 0.0
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -120,6 +136,7 @@ class HistoricalIngestor:
         while page < self.cfg.max_pages:
             if self.cfg.until_ms and cursor and cursor >= self.cfg.until_ms:
                 break
+            request_since = cursor
             batch, err = self._fetch_page(cursor)
             if err is not None:
                 report.fetch_errors.append(FetchError(int(time.time()*1000), err))
@@ -130,10 +147,24 @@ class HistoricalIngestor:
                 page += 1
                 continue
             if not batch:
-                break  # no more data
+                # no more data — record an empty page and stop
+                report.pages.append(PageRecord(
+                    page_number=page, request_since=request_since,
+                    response_first_ts=None, response_last_ts=None,
+                    row_count=0, next_since=None, cursor_advanced=False))
+                break
             rows.extend(batch)
-            last_ts = max(r[0] for r in batch)
+            first_ts = int(min(r[0] for r in batch))
+            last_ts = int(max(r[0] for r in batch))
+            prev_cursor = cursor
             cursor = last_ts + 1
+            advanced = cursor > prev_cursor
+            if not advanced:
+                report.pagination_failures += 1
+            report.pages.append(PageRecord(
+                page_number=page, request_since=request_since,
+                response_first_ts=first_ts, response_last_ts=last_ts,
+                row_count=len(batch), next_since=cursor, cursor_advanced=advanced))
             page += 1
             # rate-limit
             time.sleep(self.cfg.rate_limit_ms / 1000.0)
@@ -146,6 +177,11 @@ class HistoricalIngestor:
             report.last_timestamp = int(df["timestamp"].iloc[-1])
             report.candle_count = len(df)
             report.missing_ranges = self._find_missing_ranges(df)
+            # coverage: expected candles over the [first,last] span at this timeframe
+            tf = timeframe_ms(self.cfg.timeframe)
+            span_ms = report.last_timestamp - report.first_timestamp
+            report.expected_candles = int(span_ms // tf) + 1
+            report.coverage_ratio = min(1.0, len(df) / report.expected_candles) if report.expected_candles > 0 else 0.0
 
         # persist cache
         if self.cfg.cache_dir and len(df):
