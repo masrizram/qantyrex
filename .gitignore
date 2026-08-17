@@ -29,3 +29,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Phase 22 runtime artifacts
+.data_cache/
+phase22_report.json
+*.parquet

@@ -57,8 +57,9 @@ class SignalEngine:
         # Attach higher-timeframe trend (last closed HT bar <= each entry bar)
         if df_trend is not None and len(df_trend):
             ht = classify_trend(df_trend, self.cfg.ema_fast, self.cfg.ema_slow)
-            ht = ht[["timestamp", "trend_state"]].rename(
-                columns={"timestamp": "timestamp_ht", "trend_state": "trend_tf"})
+            # use the string `trend` column so downstream .value string comparisons hold
+            ht = ht[["timestamp", "trend"]].rename(
+                columns={"timestamp": "timestamp_ht", "trend": "trend_tf"})
             # map by floor join: for each entry bar, last HT bar with ts <= entry ts
             out = out.sort_values("timestamp").reset_index(drop=True)
             ht = ht.sort_values("timestamp_ht").reset_index(drop=True)
@@ -93,7 +94,9 @@ class SignalEngine:
 
         # ---- Trend gate ----
         trend = row["trend_state"]
+        trend = trend.value if isinstance(trend, TrendState) else str(trend)
         trend_tf = row.get("trend_tf", trend)
+        trend_tf = trend_tf.value if isinstance(trend_tf, TrendState) else str(trend_tf)
         if trend == TrendState.NEUTRAL.value:
             return SignalResult(None, "trend_neutral")
         # Determine side from trend direction

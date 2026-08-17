@@ -45,10 +45,15 @@ def classify_trend(
             return TrendState.BEARISH
         return TrendState.NEUTRAL
 
-    out["trend"] = out.apply(_cls, axis=1).map(lambda x: x.value if isinstance(x, TrendState) else x)
-    out["trend_state"] = out["trend"].map(
-        lambda v: TrendState(v) if isinstance(v, str) else v
-    )
+    states = out.apply(_cls, axis=1)
+    # pandas may stringify enum results via object inference; coerce explicitly
+    def _to_enum(x):
+        return x if isinstance(x, TrendState) else TrendState(str(x))
+    def _to_str(x):
+        e = _to_enum(x)
+        return e.value
+    out["trend"] = pd.Series([_to_str(s) for s in states], index=out.index, dtype=object)
+    out["trend_state"] = pd.Series([_to_enum(s) for s in states], index=out.index, dtype=object)
     return out
 
 

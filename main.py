@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 import time
@@ -106,10 +107,46 @@ def cmd_run(cfg: Config) -> int:
     return asyncio.run(_run_loop(cfg))
 
 
+def cmd_phase22(cfg: Config) -> int:
+    """Phase 22: real historical data validation against a multi-asset universe."""
+    import ccxt
+    from .research.real_pipeline import run_real_pipeline, aggregate_report, write_report
+    from .research.sample_gates import SampleGates
+
+    ex_cls = getattr(ccxt, cfg.exchange, None) or getattr(ccxt, "gate")
+    exchange = ex_cls({"enableRateLimit": True})
+    symbols = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"]
+    gates = SampleGates(min_full_trades=30, min_oos_trades=15, min_aggregate_wf_trades=30)
+    print(f"[phase22] exchange={cfg.exchange} universe={symbols} timeframe=1h")
+    print("[phase22] NOTE: live trading is NOT enabled by this phase. Max outcome = PAPER_TRADING_ELIGIBLE.")
+    results = run_real_pipeline(
+        cfg, symbols, timeframe="1h", limit_pages=6,
+        cache_dir="./.data_cache", mc_iterations=1000,
+        wf_train=1500, wf_oos=300, wf_step=300, gates=gates,
+        exchange=exchange,
+    )
+    agg = aggregate_report(results)
+    write_report(results, agg, "./phase22_report.json")
+    print("\n" + "=" * 60)
+    print("PHASE 22 AGGREGATE")
+    print("=" * 60)
+    print(json.dumps(agg, indent=2, default=str))
+    print("\nPer-asset classification:")
+    for r in results:
+        line = f"  {r.symbol:<10} "
+        if not r.available:
+            print(line + f"SKIPPED ({r.skip_reason})")
+        else:
+            print(line + f"{r.classification}  reasons={r.classification_reasons}")
+    print("\nFull report: ./phase22_report.json")
+    print("LIVE TRADING REMAINS BLOCKED. Phase 22 maximum = PAPER_TRADING_ELIGIBLE.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     setup_logging()
     parser = argparse.ArgumentParser(prog="trading_bot")
-    parser.add_argument("command", choices=["research", "run", "selfcheck"],
+    parser.add_argument("command", choices=["research", "run", "selfcheck", "phase22"],
                         help="What to do")
     args = parser.parse_args(argv)
     cfg = load_config()
@@ -119,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_selfcheck(cfg)
     if args.command == "run":
         return cmd_run(cfg)
+    if args.command == "phase22":
+        return cmd_phase22(cfg)
     return 2
 
 
