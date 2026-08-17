@@ -24,12 +24,12 @@ class SimulatorConfig:
     fee_rate: float = 0.001
     slippage_bps: float = 2.0
     spread_bps: float = 1.0
-    latency_bars: int = 0  # signal at bar t fills at bar t+latency
-    rejection_prob: float = 0.0  # probability an order is rejected
+    latency_bars: int = 0
+    rejection_prob: float = 0.0
     partial_fill_prob: float = 0.0
     partial_fill_ratio: float = 0.5
     break_even_r: float = 1.0
-    trail_atr_mult: float = 2.0  # trailing distance = mult * ATR
+    trail_atr_mult: float = 2.0
     max_open_positions: int = 1
     seed: int = 0
     apply_slippage_on_exit: bool = True
@@ -37,11 +37,12 @@ class SimulatorConfig:
 
 @dataclass
 class SimulationResult:
-    trades: pd.DataFrame  # closed trades journal
+    trades: pd.DataFrame
     equity_curve: pd.Series
     metrics: Metrics
     rejected_signals: int = 0
     open_positions_eod: int = 0
+    signal_rejections: List[dict] = field(default_factory=list)
 
 
 class Simulator:
@@ -52,17 +53,15 @@ class Simulator:
     def run(self, candles: pd.DataFrame,
             signals: List[Signal],
             features_for_atr: Optional[pd.DataFrame] = None) -> SimulationResult:
-        """Simulate signals over candles. Each signal's `timestamp` (ms) must
-        align with a candle open-time in `candles`."""
         candles = candles.copy().sort_values("timestamp").reset_index(drop=True)
         ts_to_idx = {int(t): i for i, t in enumerate(candles["timestamp"])}
         signals = sorted(signals, key=lambda s: s.timestamp)
 
-        equity = self.cfg.initial_equity
-        peak = equity
-        start_of_day = equity
-        equity_pts: List[tuple[int, float]] = [(int(candles["timestamp"].iloc[0]), equity)]
+        equity_ref = [self.cfg.initial_equity]
+        start_of_day = equity_ref[0]
+        equity_pts: List[tuple[int, float]] = [(int(candles["timestamp"].iloc[0]), equity_ref[0])]
         trade_rows: List[dict] = []
+        signal_rejections: List[dict] = []
         open_positions: List[Position] = []
         rejected = 0
         last_day = pd.Timestamp(int(candles["timestamp"].iloc[0]), unit="ms", tz="UTC").date()
@@ -70,47 +69,45 @@ class Simulator:
         for sig in signals:
             idx = ts_to_idx.get(int(sig.timestamp))
             if idx is None:
-                continue  # signal not aligned to a candle; skip (no fabrication)
+                signal_rejections.append({"signal_id": sig.signal_id, "reason": "NO_CANDLE"})
+                rejected += 1
+                continue
             fill_idx = idx + 1 + self.cfg.latency_bars
             if fill_idx >= len(candles):
+                signal_rejections.append({"signal_id": sig.signal_id, "reason": "LATENCY_OVERFLOW"})
+                rejected += 1
                 continue
-            # rollover day for DD accounting
             cur_day = pd.Timestamp(int(candles["timestamp"].iloc[fill_idx]), unit="ms", tz="UTC").date()
             if cur_day != last_day:
-                start_of_day = equity
+                start_of_day = equity_ref[0]
                 last_day = cur_day
 
-            # daily DD check
-            daily_dd = (start_of_day - equity) / start_of_day if start_of_day > 0 else 0
+            daily_dd = (start_of_day - equity_ref[0]) / start_of_day if start_of_day > 0 else 0
             if daily_dd >= 0.03:
-                # stop taking new entries on this day
+                signal_rejections.append({"signal_id": sig.signal_id, "reason": "DAILY_DD_LIMIT",
+                                          "daily_dd": round(daily_dd, 4), "equity": round(equity_ref[0], 2)})
                 rejected += 1
                 continue
             if len(open_positions) >= self.cfg.max_open_positions:
+                signal_rejections.append({"signal_id": sig.signal_id, "reason": "MAX_OPEN_POSITIONS",
+                                          "open_positions": len(open_positions)})
                 rejected += 1
                 continue
-            # rejection simulation
             if self.cfg.rejection_prob > 0 and self.rng.random() < self.cfg.rejection_prob:
+                signal_rejections.append({"signal_id": sig.signal_id, "reason": "REJECTION_SIMULATED"})
                 rejected += 1
                 continue
+
             fill_bar = candles.iloc[fill_idx]
-            # execution price with slippage + spread
             slip = self.cfg.slippage_bps / 10000.0
             spread = self.cfg.spread_bps / 10000.0
             if sig.side == Side.BUY:
                 fill_price = float(fill_bar["open"]) * (1 + slip + spread / 2)
             else:
                 fill_price = float(fill_bar["open"]) * (1 - slip - spread / 2)
-            # partial fill
             qty_mult = 1.0
             if self.cfg.partial_fill_prob > 0 and self.rng.random() < self.cfg.partial_fill_prob:
                 qty_mult = self.cfg.partial_fill_ratio
-            entry_fee = abs(fill_price) * 0 * 0  # fees computed on notional below
-            notional = sig.entry  # placeholder; sizing handled by risk manager upstream
-            # We use the signal's intended risk to derive qty: 1 unit of risk
-            # The caller should embed the intended qty in signal.features or compute here.
-            # For the backtester we use the position sizer via RiskManager (passed in).
-            # Here we simply assume qty=1 share-equivalent and scale pnl by size_unit.
             qty = float(sig.features.get("quantity", 1.0)) * qty_mult
             entry_fee = qty * fill_price * self.cfg.fee_rate
 
@@ -122,20 +119,17 @@ class Simulator:
                 fees=entry_fee,
             )
             open_positions.append(pos)
-            equity -= entry_fee
-            equity_pts.append((int(fill_bar["timestamp"]), equity))
+            equity_ref[0] -= entry_fee
+            equity_pts.append((int(fill_bar["timestamp"]), equity_ref[0]))
 
-            # manage this position on subsequent bars
             self._manage(pos, candles, fill_idx + 1, features_for_atr, trade_rows,
-                         lambda: equity, peak)
+                         equity_ref)
 
-        # close any remaining open positions at last close
         for pos in open_positions:
             if pos.is_open:
                 last = candles.iloc[-1]
                 self._exit(pos, float(last["close"]), int(last["timestamp"]),
-                           ExitReason.TIMEOUT, trade_rows)
-        # rebuild equity curve from trade pnls (simpler + robust)
+                           ExitReason.TIMEOUT, trade_rows, equity_ref)
         eq = [self.cfg.initial_equity]
         for tr in trade_rows:
             eq.append(eq[-1] + tr["pnl"])
@@ -146,57 +140,52 @@ class Simulator:
         m = compute_metrics(trades_df, equity_curve)
         return SimulationResult(
             trades=trades_df, equity_curve=equity_curve, metrics=m,
-            rejected_signals=rejected,
+            rejected_signals=rejected, signal_rejections=signal_rejections,
             open_positions_eod=sum(1 for p in open_positions if p.is_open),
         )
 
     def _manage(self, pos: Position, candles: pd.DataFrame, start_idx: int,
                 features: Optional[pd.DataFrame], trade_rows: List[dict],
-                equity_fn, peak) -> None:
+                equity_ref: list) -> None:
         i = start_idx
         moved_be = False
         while i < len(candles) and pos.is_open:
             bar = candles.iloc[i]
             hi, lo, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
-            # update favorable/adverse excursion
             if pos.side == Side.BUY:
                 pos.max_favorable = max(pos.max_favorable or -1e18, hi - pos.entry_price)
                 pos.max_adverse = min(pos.max_adverse or 1e18, lo - pos.entry_price)
             else:
                 pos.max_favorable = max(pos.max_favorable or -1e18, pos.entry_price - lo)
                 pos.max_adverse = min(pos.max_adverse or 1e18, pos.entry_price - hi)
-            # trailing stop (ATR-based) using current bar's ATR
             atr_v = None
             if features is not None and i < len(features) and "atr" in features.columns:
                 atr_v = features["atr"].iloc[i]
-            # check SL first (worst case first), then TP, then BE/trailing update
             if pos.side == Side.BUY:
                 if lo <= pos.stop_loss:
                     self._exit(pos, pos.stop_loss, int(bar["timestamp"]),
-                               ExitReason.SL, trade_rows)
+                               ExitReason.SL, trade_rows, equity_ref)
                     return
                 if hi >= pos.take_profit:
                     self._exit(pos, pos.take_profit, int(bar["timestamp"]),
-                               ExitReason.TP, trade_rows)
+                               ExitReason.TP, trade_rows, equity_ref)
                     return
-                # break-even at +1R
                 if not moved_be and pos.max_favorable and pos.max_favorable >= (
                         pos.entry_price - pos.stop_loss) * self.cfg.break_even_r:
-                    pos.stop_loss = pos.entry_price  # never move SL backward
+                    pos.stop_loss = pos.entry_price
                     moved_be = True
-                # trailing
                 if atr_v is not None and not np.isnan(atr_v):
                     new_trail = hi - self.cfg.trail_atr_mult * atr_v
                     if new_trail > pos.stop_loss:
                         pos.stop_loss = new_trail
-            else:  # SELL
+            else:
                 if hi >= pos.stop_loss:
                     self._exit(pos, pos.stop_loss, int(bar["timestamp"]),
-                               ExitReason.SL, trade_rows)
+                               ExitReason.SL, trade_rows, equity_ref)
                     return
                 if lo <= pos.take_profit:
                     self._exit(pos, pos.take_profit, int(bar["timestamp"]),
-                               ExitReason.TP, trade_rows)
+                               ExitReason.TP, trade_rows, equity_ref)
                     return
                 if not moved_be and pos.max_favorable and pos.max_favorable >= (
                         pos.stop_loss - pos.entry_price) * self.cfg.break_even_r:
@@ -209,7 +198,7 @@ class Simulator:
             i += 1
 
     def _exit(self, pos: Position, price: float, ts: int, reason: ExitReason,
-              trade_rows: List[dict]) -> None:
+              trade_rows: List[dict], equity_ref: list) -> None:
         raw_price = price
         slippage_amt = 0.0
         if self.cfg.apply_slippage_on_exit:
@@ -224,9 +213,9 @@ class Simulator:
         gross_pnl = ((price - pos.entry_price) if pos.side == Side.BUY
                      else (pos.entry_price - price)) * pos.quantity
         pnl = gross_pnl - total_fees
-        # R multiple relative to original risk per unit
         risk_per_unit = abs(pos.entry_price - pos.stop_loss)
         r_mult = pnl / (risk_per_unit * pos.quantity) if risk_per_unit > 0 and pos.quantity > 0 else 0.0
+        equity_ref[0] += pnl
         pos.closed_at = ts
         pos.exit_price = price
         pos.exit_reason = reason
