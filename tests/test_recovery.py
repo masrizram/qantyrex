@@ -33,7 +33,7 @@ def test_state_machine_recovery_sequence():
 def test_recovery_unknown_position_blocks_trading():
     """If exchange has a position we don't know about -> reconcile -> risk lock."""
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=98, take_profit=106)
+                   quantity=1.0, entry_price=100, initial_stop_loss=98, stop_loss=98, take_profit=106)
     rep = reconcile([], [{"symbol": "BTC/USDT", "contracts": 1.0}], [], [])
     assert len(rep.unknown_positions) == 1
     with pytest.raises(ReconciliationMismatch):
@@ -42,7 +42,7 @@ def test_recovery_unknown_position_blocks_trading():
 
 def test_recovery_missing_sl_detected_and_blocks():
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=0, take_profit=106)  # no SL
+                   quantity=1.0, entry_price=100, initial_stop_loss=0, stop_loss=0, take_profit=106)  # no SL
     exch = [{"symbol": "BTC/USDT", "contracts": 1.0}]
     rep = reconcile([pos], exch, [], [])
     assert "missing_sl" in [k for k in ("missing_sl","missing_tp") if getattr(rep, k)]
@@ -52,7 +52,7 @@ def test_recovery_missing_sl_detected_and_blocks():
 
 def test_recovery_missing_tp_detected():
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=98, take_profit=0)
+                   quantity=1.0, entry_price=100, initial_stop_loss=98, stop_loss=98, take_profit=0)
     exch = [{"symbol": "BTC/USDT", "contracts": 1.0}]
     rep = reconcile([pos], exch, [], [])
     assert len(rep.missing_tp) == 1

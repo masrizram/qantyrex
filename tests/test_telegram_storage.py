@@ -161,8 +161,10 @@ def test_storage_trade_journal_roundtrip(tmp_path):
     ch = config_hash({"a": 1})
     tr = TradeRecord(
         trade_id="T1", signal_id="S1", strategy_version="v1", config_hash=ch,
-        code_version="0.1.0", timestamp=1000, symbol="BTC/USDT", side=Side.BUY,
-        entry=100, exit=104, quantity=1.0, stop_loss=98, take_profit=106,
+        code_version="0.1.0", signal_timestamp=500, opened_at=1000, closed_at=2000,
+        symbol="BTC/USDT", side=Side.BUY,
+        entry_price=100, exit_price=104, quantity=1.0,
+        initial_stop_loss=98, final_stop_loss=98, take_profit=106,
         fees=0.5, slippage=0.2, pnl=3.5, r_multiple=1.75,
         regime=RegimeState.STRONG_TREND, signal_score=82.0,
         risk_percent=0.005, exit_reason=ExitReason.TP,
@@ -185,9 +187,11 @@ def test_storage_trades_for_symbol(tmp_path):
     for i in range(3):
         tr = TradeRecord(
             trade_id=f"T{i}", signal_id=f"S{i}", strategy_version="v1",
-            config_hash=ch, code_version="0.1.0", timestamp=1000 + i,
-            symbol="BTC/USDT", side=Side.BUY, entry=100, exit=104, quantity=1.0,
-            stop_loss=98, take_profit=106, fees=0.5, slippage=0.2, pnl=3.5,
+            config_hash=ch, code_version="0.1.0",
+            signal_timestamp=500 + i, opened_at=1000 + i, closed_at=2000 + i,
+            symbol="BTC/USDT", side=Side.BUY, entry_price=100, exit_price=104, quantity=1.0,
+            initial_stop_loss=98, final_stop_loss=98, take_profit=106,
+            fees=0.5, slippage=0.2, pnl=3.5,
             r_multiple=1.75, regime=RegimeState.STRONG_TREND, signal_score=82.0,
             risk_percent=0.005, exit_reason=ExitReason.TP,
         )

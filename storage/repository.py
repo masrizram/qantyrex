@@ -70,9 +70,9 @@ def trade_record_to_orm(t: TradeRecord, config_hash: str, code_version: str) -> 
     return TradeRecordORM(
         trade_id=t.trade_id, signal_id=t.signal_id,
         strategy_version=t.strategy_version, config_hash=config_hash,
-        code_version=code_version, timestamp=t.timestamp,
-        symbol=t.symbol, side=t.side.value, entry=t.entry, exit=t.exit,
-        quantity=t.quantity, stop_loss=t.stop_loss, take_profit=t.take_profit,
+        code_version=code_version, timestamp=t.signal_timestamp,
+        symbol=t.symbol, side=t.side.value, entry=t.entry_price, exit=t.exit_price,
+        quantity=t.quantity, stop_loss=t.initial_stop_loss, take_profit=t.take_profit,
         fees=t.fees, slippage=t.slippage, pnl=t.pnl, r_multiple=t.r_multiple,
         regime=t.regime.value, signal_score=t.signal_score,
         risk_percent=t.risk_percent, exit_reason=t.exit_reason.value,

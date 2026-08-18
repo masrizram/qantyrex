@@ -146,7 +146,7 @@ def test_order_manager_tracks_open_and_rejected():
 
 def test_sltp_break_even_moves_stop_forward_only():
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=98, take_profit=106)
+                   quantity=1.0, entry_price=100, initial_stop_loss=98, stop_loss=98, take_profit=106)
     m = SlTpManager(break_even_r=1.0)
     # move up to +1.5R favorable -> should move BE
     r = m.update(pos, high=104, low=100)  # fav = 4, risk = 2 -> BE
@@ -156,7 +156,7 @@ def test_sltp_break_even_moves_stop_forward_only():
 
 def test_sltp_trailing_never_moves_backward():
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=98, take_profit=110)
+                   quantity=1.0, entry_price=100, initial_stop_loss=98, stop_loss=98, take_profit=110)
     m = SlTpManager(trail_atr_mult=2.0)
     # new high 103, atr 1 -> trail = 103 - 2 = 101 (moves up)
     m.update(pos, high=103, low=100, atr=1.0)
@@ -168,17 +168,17 @@ def test_sltp_trailing_never_moves_backward():
 
 def test_sltp_exits_on_sl_and_tp():
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=98, take_profit=106)
+                   quantity=1.0, entry_price=100, initial_stop_loss=98, stop_loss=98, take_profit=106)
     m = SlTpManager()
     assert m.update(pos, high=100, low=97) is not None  # SL hit
     pos2 = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                    quantity=1.0, entry_price=100, stop_loss=95, take_profit=106)
+                    quantity=1.0, entry_price=100, initial_stop_loss=95, stop_loss=95, take_profit=106)
     assert m.update(pos2, high=107, low=100) is not None  # TP hit
 
 
 def test_sltp_verify_flags_missing_protection():
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=101, take_profit=106)
+                   quantity=1.0, entry_price=100, initial_stop_loss=101, stop_loss=101, take_profit=106)
     m = SlTpManager()
     issues = m.verify_sl_tp(pos)  # SL above entry -> invalid
     assert "sl_not_below_entry" in issues
@@ -198,14 +198,14 @@ def test_reconciliation_detects_unknown_position():
 
 def test_reconciliation_detects_missing_position():
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=98, take_profit=106)
+                   quantity=1.0, entry_price=100, initial_stop_loss=98, stop_loss=98, take_profit=106)
     rep = reconcile([pos], [], [], [])
     assert len(rep.missing_positions) == 1
 
 
 def test_reconciliation_detects_incorrect_size():
     pos = Position(strategy_version="v1", symbol="BTC/USDT", side=Side.BUY,
-                   quantity=1.0, entry_price=100, stop_loss=98, take_profit=106)
+                   quantity=1.0, entry_price=100, initial_stop_loss=98, stop_loss=98, take_profit=106)
     exch = [{"symbol": "BTC/USDT", "contracts": 2.0}]
     rep = reconcile([pos], exch, [], [])
     assert len(rep.incorrect_size) == 1

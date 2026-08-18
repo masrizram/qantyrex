@@ -112,11 +112,13 @@ class Order(BaseModel if isinstance(BaseModel, type) else object):
 class Position(BaseModel if isinstance(BaseModel, type) else object):
     trade_id: str = Field(default_factory=_uuid)
     signal_id: Optional[str] = None
+    signal_timestamp: int = 0
     strategy_version: str
     symbol: str
     side: Side
     quantity: float
     entry_price: float
+    initial_stop_loss: float
     stop_loss: float
     take_profit: float
     break_even: bool = False
@@ -130,6 +132,7 @@ class Position(BaseModel if isinstance(BaseModel, type) else object):
     risk_percent: float = 0.0
     max_favorable: Optional[float] = None
     max_adverse: Optional[float] = None
+    sl_audit: list = Field(default_factory=list)
 
     if isinstance(BaseModel, type):
         model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -146,13 +149,16 @@ class TradeRecord(BaseModel if isinstance(BaseModel, type) else object):
     strategy_version: str
     config_hash: str
     code_version: str
-    timestamp: int
+    signal_timestamp: int
+    opened_at: int
+    closed_at: int
     symbol: str
     side: Side
-    entry: float
-    exit: float
+    entry_price: float
+    exit_price: float
     quantity: float
-    stop_loss: float
+    initial_stop_loss: float
+    final_stop_loss: float
     take_profit: float
     fees: float
     slippage: float

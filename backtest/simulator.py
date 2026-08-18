@@ -98,6 +98,20 @@ class Simulator:
                 rejected += 1
                 continue
 
+            risk_per_unit = abs(sig.entry - sig.stop_loss)
+            if risk_per_unit <= 1e-12:
+                signal_rejections.append({"signal_id": sig.signal_id, "reason": "ZERO_RISK"})
+                rejected += 1
+                continue
+            if sig.side == Side.BUY and sig.stop_loss >= sig.entry:
+                signal_rejections.append({"signal_id": sig.signal_id, "reason": "INVALID_STOP_SIDE"})
+                rejected += 1
+                continue
+            if sig.side == Side.SELL and sig.stop_loss <= sig.entry:
+                signal_rejections.append({"signal_id": sig.signal_id, "reason": "INVALID_STOP_SIDE"})
+                rejected += 1
+                continue
+
             fill_bar = candles.iloc[fill_idx]
             slip = self.cfg.slippage_bps / 10000.0
             spread = self.cfg.spread_bps / 10000.0
@@ -112,12 +126,21 @@ class Simulator:
             entry_fee = qty * fill_price * self.cfg.fee_rate
 
             pos = Position(
-                signal_id=sig.signal_id, strategy_version=sig.strategy_version,
+                signal_id=sig.signal_id, signal_timestamp=int(sig.timestamp),
+                strategy_version=sig.strategy_version,
                 symbol=sig.symbol, side=sig.side, quantity=qty,
-                entry_price=fill_price, stop_loss=sig.stop_loss,
-                take_profit=sig.take_profit, opened_at=int(fill_bar["timestamp"]),
+                entry_price=fill_price, initial_stop_loss=sig.stop_loss,
+                stop_loss=sig.stop_loss, take_profit=sig.take_profit,
+                opened_at=int(fill_bar["timestamp"]),
                 fees=entry_fee,
             )
+            pos.sl_audit.append({
+                "timestamp": int(fill_bar["timestamp"]),
+                "position_id": pos.trade_id,
+                "old_sl": None,
+                "new_sl": sig.stop_loss,
+                "reason": "INITIAL",
+            })
             open_positions.append(pos)
             equity_ref[0] -= entry_fee
             equity_pts.append((int(fill_bar["timestamp"]), equity_ref[0]))
@@ -172,12 +195,28 @@ class Simulator:
                     return
                 if not moved_be and pos.max_favorable and pos.max_favorable >= (
                         pos.entry_price - pos.stop_loss) * self.cfg.break_even_r:
+                    old_sl = pos.stop_loss
                     pos.stop_loss = pos.entry_price
+                    pos.sl_audit.append({
+                        "timestamp": int(bar["timestamp"]),
+                        "position_id": pos.trade_id,
+                        "old_sl": old_sl,
+                        "new_sl": pos.stop_loss,
+                        "reason": "BREAK_EVEN",
+                    })
                     moved_be = True
                 if atr_v is not None and not np.isnan(atr_v):
                     new_trail = hi - self.cfg.trail_atr_mult * atr_v
                     if new_trail > pos.stop_loss:
+                        old_sl = pos.stop_loss
                         pos.stop_loss = new_trail
+                        pos.sl_audit.append({
+                            "timestamp": int(bar["timestamp"]),
+                            "position_id": pos.trade_id,
+                            "old_sl": old_sl,
+                            "new_sl": pos.stop_loss,
+                            "reason": "TRAILING",
+                        })
             else:
                 if hi >= pos.stop_loss:
                     self._exit(pos, pos.stop_loss, int(bar["timestamp"]),
@@ -189,12 +228,28 @@ class Simulator:
                     return
                 if not moved_be and pos.max_favorable and pos.max_favorable >= (
                         pos.stop_loss - pos.entry_price) * self.cfg.break_even_r:
+                    old_sl = pos.stop_loss
                     pos.stop_loss = pos.entry_price
+                    pos.sl_audit.append({
+                        "timestamp": int(bar["timestamp"]),
+                        "position_id": pos.trade_id,
+                        "old_sl": old_sl,
+                        "new_sl": pos.stop_loss,
+                        "reason": "BREAK_EVEN",
+                    })
                     moved_be = True
                 if atr_v is not None and not np.isnan(atr_v):
                     new_trail = lo + self.cfg.trail_atr_mult * atr_v
                     if new_trail < pos.stop_loss:
+                        old_sl = pos.stop_loss
                         pos.stop_loss = new_trail
+                        pos.sl_audit.append({
+                            "timestamp": int(bar["timestamp"]),
+                            "position_id": pos.trade_id,
+                            "old_sl": old_sl,
+                            "new_sl": pos.stop_loss,
+                            "reason": "TRAILING",
+                        })
             i += 1
 
     def _exit(self, pos: Position, price: float, ts: int, reason: ExitReason,
@@ -213,7 +268,7 @@ class Simulator:
         gross_pnl = ((price - pos.entry_price) if pos.side == Side.BUY
                      else (pos.entry_price - price)) * pos.quantity
         pnl = gross_pnl - total_fees
-        risk_per_unit = abs(pos.entry_price - pos.stop_loss)
+        risk_per_unit = abs(pos.entry_price - pos.initial_stop_loss)
         r_mult = pnl / (risk_per_unit * pos.quantity) if risk_per_unit > 0 and pos.quantity > 0 else 0.0
         equity_ref[0] += pnl
         pos.closed_at = ts
@@ -223,10 +278,20 @@ class Simulator:
         pos.fees = total_fees
         trade_rows.append({
             "trade_id": pos.trade_id, "signal_id": pos.signal_id or "",
-            "strategy_version": pos.strategy_version, "timestamp": ts,
+            "strategy_version": pos.strategy_version,
+            "timestamp": ts,
             "symbol": pos.symbol, "side": pos.side.value,
             "entry": pos.entry_price, "exit": price, "quantity": pos.quantity,
             "stop_loss": pos.stop_loss, "take_profit": pos.take_profit,
             "fees": total_fees, "slippage": slippage_amt,
             "pnl": pnl, "r_multiple": r_mult, "exit_reason": reason.value,
+            # Phase 25 forensic fields (authoritative)
+            "signal_timestamp": pos.signal_timestamp,
+            "opened_at": pos.opened_at,
+            "closed_at": ts,
+            "entry_price": pos.entry_price,
+            "exit_price": price,
+            "initial_stop_loss": pos.initial_stop_loss,
+            "final_stop_loss": pos.stop_loss,
+            "sl_audit": list(pos.sl_audit),
         })
